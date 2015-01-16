@@ -1,0 +1,511 @@
+
+
+##-------------RRRRR-------------------------------------------------------------------
+
+# quality control (CATSS)
+
+IN <- "/projects/saltygwas/Data/OriginalData"
+OUT <- "/projects/saltygwas/Data/DerivedData/qcQC"
+PHE <- "/projects/saltygwas/Data/OriginalData/phenotypes"
+
+
+# extract CATSS sample IDs
+setwd(IN)
+study <- read.table("psychchip-raw-latest.sampledata", as.is = F, header = T)
+catss <- study[substr(study$STUDYNAME, 1, 5) == "CATSS", c("FID", "IID")]
+
+
+setwd(OUT)
+write.table(catss, "catss", quote = F, row.names = F, col.names = F )
+
+
+##---------------PLINK-------------------------------------------------------------
+
+#!/bin/bash
+
+# run basic QC on psychchip data
+
+plink2(){
+    ~/bin/plink2 --memory 8000 $@
+}
+
+
+IN=/projects/saltygwas/Data/OriginalData
+OUT=/projects/saltygwas/Data/DerivedData/qcQC
+PHE=/projects/saltygwas/Data/OriginalData/phenotypes
+
+
+
+# In PLINK, make bfile for CATSS data
+
+cd $OUT
+plink2 --bfile $IN/psychchip-raw-latest --keep catss --make-bed --out catss
+
+##################################################################################
+# CATSS
+# 5369 individuals
+# 588454 markers
+wc -l catss.fam
+wc -l catss.bim
+##################################################################################
+
+
+
+
+
+
+
+#---------------------------------------------------------------------------------
+# Step1. Identification of individuals with discordant sex information
+#---------------------------------------------------------------------------------
+
+plink2 --bfile catss --check-sex --out qc01
+
+grep PROBLEM qc01.sexcheck
+
+
+
+##--------------------RRRRR---------------------------------------------
+
+qc01 <- read.table("qc01.sexcheck", as.is = T, header = T)
+
+sex.mismatch <- qc01[qc01$STATUS != "OK",]
+
+# 14 individuals did not pass the sex check
+nrow(sex.mismatch)
+
+sex.mismatch[order(sex.mismatch$FID, sex.mismatch$IID),]
+
+##------------------------------------------------------------------------------
+     FID     IID           PEDSEX SNPSEX       STATUS   F
+1721 PC01886 PC018861      2      1      PROBLEM  0.971600       # DZ opposite sex
+2068 PC01886 PC018862      1      2      PROBLEM  0.045560
+4421 PC02672 PC026721      1      2      PROBLEM -0.026930     #
+4523 PC06817 PC068171      1      2      PROBLEM  0.064230     # DZ opposite sex
+4526 PC06817 PC068172      2      1      PROBLEM  0.968900
+5228 PC14566 PC145662      1      2      PROBLEM  0.073030     #
+2339 PC18238 PC182382      1      2      PROBLEM -0.001721     #
+1496 PC21058 PC210581      1      2      PROBLEM  0.037860     # DZ opposite sex
+1499 PC21058 PC210582      2      1      PROBLEM  0.974200
+3193 PC21722 PC217222      2      0      PROBLEM  0.558000     #
+2153 PC27535 PC275351      1      2      PROBLEM  0.040670     # DZ opposite sex
+1686 PC27535 PC275352      2      1      PROBLEM  0.970900    
+4005 PC29886 PC298862      1      2      PROBLEM -0.039640     #
+1385 PC30508 PC305081      2      0      PROBLEM  0.242100     #
+
+#-----------------------------------------------------------------------------------
+
+# plot a histogram
+png("qc01.sexcheck.png")
+hist(qc01$F, breaks=100, ylim = c(0, 1000), main = "Check for gender mismatches", xlab = "X-chromosome F")
+dev.off()
+
+#  14 individuals to be excluded
+write.table(qc01[qc01$STATUS != "OK", c("FID", "IID")], "qc01.sexcheck.fail", quote = F, row.names = F, col.names = F )
+
+
+
+
+
+
+
+#------------------------------------------------------------------------------------------------------
+# Step2. Identification of individuals with elevated missing data rates or outlying heterozygosity rate
+#------------------------------------------------------------------------------------------------------
+
+## Create the files qc02.imiss and qc02.lmiss
+## The fourth column in the .imiss file (N_MISS) denotes the number of missing SNPs
+## The sixth column (F_MISS) denotes the proportion of missing SNPs per individual
+
+plink2 --bfile catss --missing --out qc02
+
+##--------------------RRRRR---------------------------------------------
+
+setwd(OUT)
+
+## Calculate the observed heterozygosity rate per individual using the formula (N(NM) âˆ’ O(Hom))/N(NM)
+## Plot a histogram
+
+png("qc02.miss.png", width = 960, height = 480, units = "px")
+# Missing by individual (imiss)
+imiss <- read.table("qc02.imiss", as.is = T, header = T)
+# Missing by SNP(locus) (lmiss)
+lmiss <- read.table("qc02.lmiss", as.is = T, header = T)
+par(mfrow = c(1,2))
+# Histogram of missing genotypes for individuals
+hist(imiss[,"F_MISS"], breaks = 50, xlim = c(0, 0.04), ylim = c(0, 50),
+     xlab = "Proportion of missing SNPs",
+     main = "Missing genotypes for individuals")
+
+# Histogram of SNP missingness
+# F_MISS: Proportion of sample missing for this SNP
+hist(lmiss[,"F_MISS"], breaks = 50, ylim = c(0, 500),
+     xlab = "Proportion of sample missing for SNPs",
+     main = "SNP missingness")
+par(oldpar)
+dev.off()
+
+# Example in the protocal
+
+png("qc02.miss_2.png", width = 960, height = 480, units = "px")
+IMISS=read.table("qc02.imiss", header=T, as.is=T)
+LMISS=read.table("qc02.lmiss", header=T, as.is=T)
+oldpar=par(mfrow=c(1,2))
+plot( (1:dim(IMISS)[1])/(dim(IMISS)[1]-1), sort(1-IMISS$F_MISS),
+     main="Individual call rate cumulative distribution",
+     xlab="Quantile",
+     ylab="Call Rate" ); grid()
+plot( (1:dim(LMISS)[1])/(dim(LMISS)[1]-1), sort(1-LMISS$F_MISS),
+     main="SNP coverage cumulative distribution",
+     xlab="Quantile",
+     ylab="Coverage" ); grid()
+par(oldpar)
+dev.off()
+
+###########################################################################################
+# call rate >99.5% for individuals and coverage >99% for SNPs
+# Threshold
+# --mind 0.005
+# --geno 0.01
+# --maf 0.001 (5/5369 = 0.0009312721)
+
+
+
+
+
+
+
+#--------------------------------------------------------------------------------------------
+# Step3. Informative missingness
+#--------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+#--------------------------------------------------------------------------------------------
+# Step4. Hardy-Weinberg Equilibrium
+#--------------------------------------------------------------------------------------------
+
+plink2 --bfile catss --hardy --out qc04
+
+
+#-------------------------RRRRR--------------------------------------------------------------
+
+HWE=read.table("qc04.hwe", header=T, as.is=T)
+P = HWE$P
+n = length(P) - sum(is.na(P))
+
+png("qc04.hwe.png", width = 480, height = 480, units = "px")
+plot( qchisq((1:n)/(n+1),2), sort(-2*log(P)),
+     main="Q-Q plot of log(HWE P-values)",
+     xlab="Expected quantile",
+     ylab="Observed quantile" )
+lines( c(0,50), c(0,50) ); grid()
+dev.off()
+
+##########################################################################################
+# Plink help document:
+#
+# By default, this procedure only considers founders,
+# so no HW results would be given for sibling-only datasets (i.e. if no parents exist).
+# To perform a rough, somewhat biased test, use the --nonfounders option
+# which means that all individuals will be included.
+# Alternatively, manually extract one person per family for this calculation
+# and recode these individuals as founders (see the --keep option to facilitate this).
+#
+############################################################################################
+# 1144 HWE- P values are missing ?
+############################################################################################
+
+############################################################################################
+# call rate >99.5% for individuals and coverage >95% for SNPs
+# Threshold
+# --mind 0.005
+# --geno 0.01
+# --maf 0.001 (5/5369 = 0.0009312721)
+# --hwe 0.001
+############################################################################################
+
+plink2 --bfile catss --mind 0.005 --geno 0.01 --maf 0.001 --hwe 0.001 --remove qc01.sexcheck.fail --make-bed --out catss_sex_miss_maf_hwe
+wc -l catss_sex_miss_maf_hwe.fam
+wc -l catss_sex_miss_maf_hwe.bim
+
+
+############################################################################################
+# CATSS
+# 5369 individuals
+# 588454 markers
+#-------------------------------------------------------------------------------------------
+# catss_sex_miss_maf_hwe
+# 4847 individuals (522 individuals removed)
+# 334199 SNPS (254255 SNPS removed)
+############################################################################################
+
+
+
+
+#-------------------------------------------------------------------------------------------
+# Step5. Heterozygosity
+#-------------------------------------------------------------------------------------------
+
+## Create the file qc02.het
+## The third column denotes the observed number of homozygous genotypes [O(Hom)]
+## The fifth column denotes the number of nonmissing genotypes [N(NM)] per individual
+
+plink2 --bfile catss_sex_miss_maf_hwe --het --out qc05
+plink2 --bfile catss_sex_miss_maf_hwe --genome --out catss.genome
+
+
+#---------------------------RRRRR------------------------------------------------------------
+
+HET = read.table("qc05.het", header=T, as.is=T)
+## Calculate Het.rate
+H = (HET$N.NM.-HET$O.HOM.)/HET$N.NM.
+png("qc05.het.png", width = 480, height = 480, units = "px")
+hist(H,50, ylim = c(0, 20), main = "Heterozygosity rate per individual" )
+#plot(HET$F_MISS, HET$H,
+#          xlim = c(0.001, 1),
+#          ylim = c(0, 0.50),
+#          xlab = "Proportion of missing genotypes",
+#          ylab = "Heterozygosity rate",
+#          main = "Genotype failure rate versus heterozygosity")
+dev.off()
+
+
+## plot Het.rate and average_pihat
+genome <- read.table('catss.genome.genome', header=T, as.is = T)
+av_pihat <- vector('numeric', length = length(unique(c(genome[,'IID1'],genome[,'IID2']))))
+names(av_pihat) <- unique(c(genome[,'IID1'], genome[,'IID2']))
+
+for (i in 1:length(av_pihat)){
+  av_pihat[i] = mean(genome[which(genome[,'IID1']==names(av_pihat)[i] | genome[,'IID2'] == names(av_pihat)[i]),'PI_HAT']) }
+
+
+png("qc05.het.pi_hat.png", width = 480, height = 480, units = "px")
+## plot Het.rate and average_pihat
+plot(H, av_pihat)
+dev.off()
+
+
+
+
+
+
+
+#-----------------------------------------------------------------------------------------------
+# Step6. Identification of cryptic relatedness ( duplication, DZ -> MZ, or relatives )
+#-----------------------------------------------------------------------------------------------
+
+plink2 --bfile catss_sex_miss_maf_hwe --indep-pairwise 1500 150 0.2 --out qc06
+plink2 --bfile catss_sex_miss_maf_hwe --extract qc06.prune.in --genome --min 0.05 --out qc06
+
+#---------------------------------RRRRR---------------------------------------------------------
+## histogram of pi_hat
+
+GEN <- read.table("qc06.genome", header = T, as.is = T)
+png("qc06.pi_hat.png")
+hist(GEN$PI_HAT,50)
+dev.off()
+
+## There are pairs with relatedness of 1
+#---------------------------------Linux----------------------------------------------------------
+awk '$10 > 0.95 {print}' qc06.genome
+
+#------------------------------------------------------------------------------------------------
+## 7 pairs of DZ twins are probably MZ twins
+     FID1      IID1     FID2      IID2 RT    EZ      Z0      Z1      Z2  PI_HAT PHE       DST     PPC   RATIO
+       PC00678  PC006781  PC00678  PC006782 OT     0  0.0000  0.0000  1.0000  1.0000  -1  1.000000  1.0000      NA
+       PC34368  PC343681  PC34368  PC343682 OT     0  0.0000  0.0001  0.9999  1.0000  -1  0.999991  1.0000      NA
+***PC04362  PC043621  PC29365  PC293652 UN    NA  0.0000  0.0000  1.0000  1.0000  -1  0.999996  1.0000      NA
+       PC00549  PC005491  PC00549  PC005492 OT     0  0.0000  0.0000  1.0000  1.0000  -1  1.000000  1.0000      NA
+     PC18130  PC181302  PC18130  PC181301 OT     0  0.0000  0.0000  1.0000  1.0000  -1  0.999996  1.0000      NA
+     PC11782  PC117821  PC11782  PC117822 OT     0  0.0000  0.0000  1.0000  1.0000  -1  1.000000  1.0000      NA
+       PC02921  PC029211  PC02921  PC029212 OT     0  0.0000  0.0000  1.0000  1.0000  -1  0.999996  1.0000      NA
+       PC19771  PC197711  PC19771  PC197712 OT     0  0.0000  0.0001  0.9999  1.0000  -1  0.999991  1.0000      NA
+
+
+#---------------------------------RRRRR----------------------------------------------------------
+
+
+
+
+
+
+# Remove related individuals
+#------R function inds2remove----------------------------------------------------------------------------------------------
+
+## The function inds2remove is used to exclude individuals included in the most pairs first
+## then randomly remove one individual from those pairs with more than 10% of regions identical by decent
+
+inds2remove = function(genomeFile, pi_hat) {
+     tmp  =genomeFile[which(genomeFile[,'PI_HAT']>pi_hat),]
+    
+     if(dim(tmp)[1]>0) {
+          toRemove = names(sort(table(c(tmp[,'IID1'],tmp[,'IID2']))))[length(table(c(tmp[,'IID1'],tmp[,'IID2'])))]
+          tmp = tmp[which(apply(tmp,1,function(x) !any(x==toRemove,na.rm=T))),]
+    
+          while (dim(tmp)[1]>0){
+               toRemove = c(toRemove,names(sort(table(c(tmp[,'IID1'],tmp[,'IID2']))))[length(table(c(tmp[,'IID1'],tmp[,'IID2'])))])
+               tmp = tmp[which(apply(tmp,1,function(x) !any(x==toRemove[length(toRemove)],na.rm=T))),]
+          }
+     } else {
+          print('There are no related samples')
+          break()
+}
+
+     # get family ID for the IIDs in toRemove
+     return(unique(rbind(as.matrix(genome[which(genome[,'IID1'] %in% toRemove),c('FID1','IID1')]),
+     as.matrix(genome[which(genome[,'IID2'] %in% toRemove),c('FID2','IID2')]))))
+}
+
+
+
+genome <- read.table("qc06.genome", header = T, as.is = T)
+remove <- inds2remove(genome, 0.1)
+write.table(remove, file = "qc06.inds2rm", quote = F, col.names = F, row.names = F)
+
+
+
+
+#------------------------------------PLINK-----------------------------------------------------------------------------
+
+## Exclude individuals included in the most pairs and
+## randomly remove individuals from those pairs with more than 10% of regions identical by decent
+
+plink2 --bfile catss_sex_miss_maf_hwe --remove qc06.inds2rm --make-bed --out catss_post_rm
+
+wc -l catss_post_rm.fam
+wc -l catss_post_rm.bim
+
+# According to the plot of average pi-hat vs proportion of heterozygosity, there is one group of
+# 1581 individuals were removed
+
+############################################################################################
+# CATSS
+# 5369 individuals
+# 588454 markers
+#-------------------------------------------------------------------------------------------
+# catss_sex_miss_maf_hwe
+# 4847 individuals (522 individuals removed)
+# 334199 SNPS (254255 SNPS removed)
+#--------------------------------------------------------------------------------------------
+# catss_post_rm
+# 3260 samples (1587 individuals removed)
+# 334199 SNPs
+##############################################################################################
+
+
+
+
+
+################################################################################################
+#
+# Association testing before PCA
+#
+#################################################################################################
+
+# continuous phenotype
+plink2 --bfile catss_post_rm --pheno $PHE/adhd_asd_141021.txt --assoc --pheno-name adhdgrind --out assoc1
+# high cutoff for ADHD
+plink2 --bfile catss_post_rm --pheno $PHE/adhd_asd_141021.txt --assoc --pheno-name adhdgrind_cutoff_h --sex --out assoc2
+
+
+
+#----------------------------RRRRR---------------------------------------------------------------
+library(qqman)
+
+assoc1 <- read.table("assoc1.qassoc", as.is = T, header = T)
+assoc2 <- read.table("assoc2.assoc", as.is = T, header = T)
+
+png("assoc1.qq.man.png", width = 1200, height = 480, units = "px")
+par(mfrow = c(1,2))  
+qq(assoc1$P, main = "Q-Q plot of GWAS p-values")
+manhattan(assoc1, col = rainbow(22), ylim = c(0,12))
+par(oldpar)
+dev.off()
+
+
+png("assoc2.qq.man.png", width = 1200, height = 480, units = "px")
+par(mfrow = c(1,2))  
+qq(assoc2$P, main = "Q-Q plot of GWAS p-values")
+manhattan(assoc2, col = rainbow(22), ylim = c(0,12))
+par(oldpar)
+dev.off()
+
+
+
+
+##################################################################################################
+# Lamda
+#-------------------------------------------------------------------------------------------------
+
+#------------------------------RRRRR--------------------------------------------------------------
+lambda <- median(assoc2$CHISQ, na.rm = T)/0.455
+lambda
+# lambda is 0.9334066
+
+
+
+##################################################################################################
+#
+# Step 7: Population Stratification
+#
+#---------------------------------------------------------------------------------------------------------------------------------
+
+plink2 --bfile catss_post_rm --indep-pairwise 1500 150 0.2 --out qc07
+plink2 --bfile catss --extract qc07.prune.in --recode --out pcas
+
+##-----------------------Eigenstrat command----------------------------------------------------------------------------------------
+
+
+
+#----Modify the template file "$OUT/EIG5.0.2/CONVERTF/par.PED.EIGENSTRAT" and place it under $OUT---------------------------------
+genotypename:    pcas.ped
+snpname:         pcas.map
+indivname:       pcas.ped
+outputformat:    EIGENSTRAT
+genotypeoutname: pcas.eigenstratgeno
+snpoutname:      pcas.snp
+indivoutname:    pcas.ind
+familynames:     NO
+#---------------------------------------------------------------------------------------------------------------------------------
+
+
+$OUT/EIG5.0.2/bin/convertf -p par.PED.EIGENSTRAT
+
+
+
+#-------Modify the template file "../../Software/EIG5.0.2/EIGENSTRAT/example.pca.par" and rename it as "pcas.pca.par"----------
+genotypename:           pcas.eigenstratgeno
+snpname:                pcas.snp
+indivname:              pcas.ind
+evecoutname:            pcas.pca.evec
+evaloutname:            pcas.eval
+altnormstyle:           NO
+numoutevec:             11
+numoutlieriter:         4
+numoutlierevec:         2
+outliersigmathresh:     6.0
+qtmode:                 0
+#-----------------------------------------------------------------------------------------------------------------------------------
+
+$OUT/EIG5.0.2/bin/smartpca -p pcas.par.par
+
+## ERROR:  error while loading shared libraries: liblapack.so.3gf: cannot open shared object file: No such file or directory
+
+
+
+
+
+
+
+
+
+
+
